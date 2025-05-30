@@ -1,3 +1,4 @@
+
 ;; STACKS-BlockCreds
 
 ;; Error codes
@@ -126,4 +127,105 @@
             credential-validity-period: validity-period-blocks
         }))
     )
+)
+
+(define-public (issue-credential
+    (credential-uuid (string-ascii 50))
+    (student-address principal)
+    (credential-type-identifier (string-ascii 50))
+    (credential-document-hash (buff 32))
+    (additional-credential-info (string-ascii 256))
+)
+    (let (
+        (education-provider-profile (unwrap! (map-get? authorized-educational-institutions tx-sender) ERR-RECORD-NOT-FOUND))
+        (credential-category-details (unwrap! (map-get? supported-credential-categories credential-type-identifier) ERR-UNSUPPORTED-CREDENTIAL-TYPE))
+        (current-block-height stacks-block-height)
+        (expiration-block-height (+ current-block-height (get credential-validity-period credential-category-details)))
+    )
+        (asserts! (is-valid-string credential-uuid) ERR-INVALID-INPUT)
+        (asserts! (is-valid-principal student-address) ERR-ZERO-ADDRESS)
+        (asserts! (is-valid-string credential-type-identifier) ERR-INVALID-INPUT)
+        (asserts! (is-valid-string additional-credential-info) ERR-INVALID-INPUT)
+        (asserts! (is-valid-hash credential-document-hash) ERR-INVALID-HASH)  ;; Added hash validation
+        (asserts! (get education-provider-verification-status education-provider-profile) ERR-NOT-AUTHORIZED)
+        (asserts! (is-none (map-get? credential-records {
+            credential-uuid: credential-uuid, 
+            student-address: student-address
+        })) ERR-DUPLICATE-CREDENTIAL)
+
+        (ok (map-set credential-records 
+            {credential-uuid: credential-uuid, student-address: student-address}
+            {
+                education-provider-address: tx-sender,
+                issuance-block-height: current-block-height,
+                expiration-block-height: expiration-block-height,
+                credential-type-identifier: credential-type-identifier,
+                credential-document-hash: credential-document-hash,
+                additional-credential-info: additional-credential-info,
+                revocation-status: false
+            }
+        ))
+    )
+)
+
+(define-public (revoke-credential 
+    (credential-uuid (string-ascii 50)) 
+    (student-address principal)
+)
+    (let (
+        (credential-record (unwrap! 
+            (map-get? credential-records 
+                {credential-uuid: credential-uuid, student-address: student-address}
+            ) 
+            ERR-RECORD-NOT-FOUND
+        ))
+    )
+        (asserts! (is-valid-string credential-uuid) ERR-INVALID-INPUT)
+        (asserts! (is-valid-principal student-address) ERR-ZERO-ADDRESS)
+        (asserts! (is-eq tx-sender (get education-provider-address credential-record)) ERR-NOT-AUTHORIZED)
+        (ok (map-set credential-records 
+            {credential-uuid: credential-uuid, student-address: student-address}
+            (merge credential-record {revocation-status: true})
+        ))
+    )
+)
+
+;; Read-only functions
+(define-read-only (get-credential-record
+    (credential-uuid (string-ascii 50))
+    (student-address principal)
+)
+    (map-get? credential-records 
+        {credential-uuid: credential-uuid, student-address: student-address}
+    )
+)
+
+(define-read-only (verify-credential-status
+    (credential-uuid (string-ascii 50))
+    (student-address principal)
+)
+    (match (map-get? credential-records 
+        {credential-uuid: credential-uuid, student-address: student-address}
+    )
+        credential-record (let (
+            (current-block-height stacks-block-height)
+            (credential-expired (> current-block-height (get expiration-block-height credential-record)))
+        )
+            (if (get revocation-status credential-record)
+                ERR-CREDENTIAL-STATUS-REVOKED
+                (if credential-expired
+                    ERR-CREDENTIAL-STATUS-EXPIRED
+                    (ok true)
+                )
+            ))
+        ERR-RECORD-NOT-FOUND
+    )
+)
+
+(define-read-only (get-education-provider-profile (provider-address principal))
+    (map-get? authorized-educational-institutions provider-address)
+)
+
+(define-read-only (get-credential-category-details (category-id (string-ascii 50)))
+    (map-get? supported-credential-categories category-id)
 )
